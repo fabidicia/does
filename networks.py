@@ -119,7 +119,8 @@ class Net(nn.Module):
     def forward(self, x):
         x = self.model(x)
         x = x.view(x.shape[0],-1) 
-        x = self.dropout(x)
+        if self.dropout:
+            x = self.dropout(x)
         x_reg_roll = self.fc_reg_roll(x)
         x_reg_pitch = self.fc_reg_pitch(x)
 
