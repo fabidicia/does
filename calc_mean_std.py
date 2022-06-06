@@ -144,6 +144,11 @@ class Normalization:
                 tmp_pitch.append(item.numpy())
         tmp_roll = np.asarray(tmp_roll)
         tmp_pitch = np.asarray(tmp_pitch)
+
+        plt.hist(tmp_roll)
+        plt.hist(tmp_pitch)
+        import pdb; pdb.set_trace()
+#        plt.show()
         self.roll_mean = tmp_roll.mean()
         self.roll_std = tmp_roll.std()
         self.pitch_mean = tmp_pitch.mean()

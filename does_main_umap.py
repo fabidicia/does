@@ -36,14 +36,19 @@ from utils import normalize_roll, normalize_pitch, denormalize_roll, denormalize
 from new_dataset import HorizonDataset
 from networks import Net
 torch.multiprocessing.set_sharing_strategy('file_system')
+
+import umap
+import umap.plot
+from feature_extractor import FeatureExtractor
 from PIL import ImageFile
 ImageFile.LOAD_TRUNCATED_IMAGES = True
+
 ############################# Code call definition ######################################
 
 parser = argparse.ArgumentParser("script to train horpe on oneplus videoframe")
 parser.add_argument('--pretrained', type=str, default=None)
-parser.add_argument('--train_path', type=str, default="./ROPIS_dataset/Train_set/Train_set_beach")
-parser.add_argument('--test_path', type=str, default="./ROPIS_dataset/Test_set/Test_set_beach")
+parser.add_argument('--train_path', type=str, default="./video_oneplus/Train_set")
+parser.add_argument('--test_path', type=str, default="./video_oneplus/Test_set")
 parser.add_argument('--roll', type=int, default=1)
 parser.add_argument('--pitch', type=int, default=1)
 parser.add_argument('--bs_test', type=int, default=512)
@@ -124,10 +129,12 @@ testtrain_dataset_loader = torch.utils.data.DataLoader(train_dataset, batch_size
 ############################# Model definition ######################################
 
 model = Net(args)
+feat_model = FeatureExtractor(model.model)
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 lr_sch = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 criterion_mse = torch.nn.MSELoss() 
 model = model.to(device)
+feat_model = feat_model.to(device)
 
 ############################# Train and Test Model definition ######################################
 
@@ -139,8 +146,10 @@ def test_model(model,dataloader,curr_epoch=0):
     roll_gt_list = []
     roll_pred_list = []
     roll_hld_pred_list = []
+    roll_features_list = []
     pitch_gt_list = []
     pitch_pred_list = []
+    pitch_features_list = []
 
     with torch.no_grad():
         for roll, pitch, frame in dataloader: ##### è dataloader o data_loader?
@@ -150,18 +159,24 @@ def test_model(model,dataloader,curr_epoch=0):
             if args.roll:
                 roll = roll.to(device, dtype=torch.float)
                 roll = normalize_roll(roll, roll_mean, roll_std)
-                roll = roll.view(roll.size(0), -1) 
+                roll = roll.view(roll.size(0), -1)
+                roll_features = feat_model(frame) 
                 out_reg_roll, _ = model(frame)
                 roll_gt_list += (denormalize_roll(roll, roll_mean, roll_std)).tolist() 
                 roll_pred_list += (denormalize_roll(out_reg_roll, roll_mean, roll_std)).tolist()    ##aggiungo una dimensione per matchare la shape di outputs!
-
+            roll_features_list.append(roll_features.cpu().detach().numpy().reshape(-1))
+            roll_features_np = np.asarray(roll_features_list)
+    
             if args.pitch:
                 pitch = pitch.to(device, dtype=torch.float)
                 pitch = normalize_pitch(pitch, pitch_mean, pitch_std)
-                pitch = pitch.view(pitch.size(0), -1) 
+                pitch = pitch.view(pitch.size(0), -1)
+                pitch_features = feat_model(frame) 
                 _, out_reg_pitch = model(frame)
                 pitch_gt_list += (denormalize_pitch(pitch, pitch_mean, pitch_std)).tolist() 
                 pitch_pred_list += (denormalize_pitch(out_reg_pitch, pitch_mean, pitch_std)).tolist()
+            pitch_features_list.append(pitch_features.cpu().detach().numpy().reshape(-1))
+            pitch_features_np = np.asarray(pitch_features_list)
 
     if args.roll:
         residual_roll = (np.abs(np.asarray(roll_gt_list) - np.asarray(roll_pred_list)))
@@ -191,6 +206,16 @@ def test_model(model,dataloader,curr_epoch=0):
         writer.add_scalar('Loss/Roll/Acc', (100 * correct_roll / len(roll_gt_list)), curr_epoch)
 
         ### TENSORBOARD PLOTTING
+
+        fig = plt.figure()
+        ax = plt.axes()
+        plt.ylabel("ylabel")
+        plt.xlabel("xlabel")
+        mapper = umap.UMAP().fit(roll_features_np)
+        umap.plot.points(mapper, labels=np.asarray(roll_gt_list))
+        writer.add_figure(tag="roll_umap",figure=fig,global_step=curr_epoch)
+        writer.flush()
+
         fig = plt.figure()
         ax = plt.axes()
         ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0,decimals=0))
@@ -250,6 +275,16 @@ def test_model(model,dataloader,curr_epoch=0):
         writer.add_scalar('Loss/Pitch/Acc', (100 * correct_pitch / len(pitch_gt_list)), curr_epoch)
 
         ### TENSORBOARD PLOTTING
+
+        fig = plt.figure()
+        ax = plt.axes()
+        plt.ylabel("ylabel")
+        plt.xlabel("xlabel")
+        mapper = umap.UMAP().fit(pitch_features_np)
+        umap.plot.points(mapper, labels=np.asarray(pitch_gt_list))
+        writer.add_figure(tag="pitch_umap",figure=fig,global_step=curr_epoch)
+        writer.flush()
+
         fig = plt.figure()
         ax = plt.axes()
         ax.yaxis.set_major_formatter(PercentFormatter(xmax=1.0,decimals=0))
@@ -330,7 +365,7 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
         if args.testtrain:
             test_model(model,testtrain_dataset_loader,epoch)
         test_model(model,test_dataset_loader,epoch)
-        torch.save(model.state_dict(), exper_path+weights_filename+"_epoch"+str(epoch)+".pth")
+        torch.save(model.state_dict(), exper_path+weights_filename+".pth")
 
 if args.pretrained:
     model.eval()

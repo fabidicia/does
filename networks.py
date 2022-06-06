@@ -5,7 +5,8 @@ from torchvision import transforms, models
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-
+from vit_pytorch import SimpleViT
+import timm
 
 out_features_mse = 1
 
@@ -115,6 +116,52 @@ class Net(nn.Module):
                         nn.Linear(in_features=2048, out_features=out_features_mse)
             )
 
+        if args.model == "simplevit":
+            model  = SimpleViT(
+                        image_size = 256,
+                        patch_size = 32,
+                        num_classes = 2,
+                        dim = 1024,
+                        depth = 6,
+                        heads = 16,
+                        mlp_dim = 2048
+                     )
+#            modules = list(model.children())[:-1]
+            self.model = model #nn.Sequential(*modules) #rebuilding the network after fc removal
+            self.model.linear_head[1] = nn.Identity()
+
+            self.fc_reg_roll = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1024, out_features=out_features_mse)
+            )
+            self.fc_reg_pitch = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1024, out_features=out_features_mse)
+            )
+
+        if args.model == "bit":
+            model  = timm.create_model('resnetv2_50x1_bitm_in21k',pretrained=True)
+#            modules = list(model.children())[:-1]
+            self.model = model #nn.Sequential(*modules) #rebuilding the network after fc removal
+            self.model.head.fc = nn.Identity()
+            self.model.head.flatten = nn.Identity()
+            self.fc_reg_roll = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=2048, out_features=out_features_mse)
+            )
+            self.fc_reg_pitch = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=2048, out_features=out_features_mse)
+            )
+
+        if args.model == "efficient":
+            model  = timm.create_model('efficientnet_es_pruned',pretrained=True)
+#            modules = list(model.children())[:-1]
+            self.model = model #nn.Sequential(*modules) #rebuilding the network after fc removal
+            #import pdb; pdb.set_trace()
+            self.model.classifier = nn.Identity()
+            self.fc_reg_roll = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1280, out_features=out_features_mse)
+            )
+            self.fc_reg_pitch = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1280, out_features=out_features_mse)
+            )
 
     def forward(self, x):
         x = self.model(x)
