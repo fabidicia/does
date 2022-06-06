@@ -332,32 +332,45 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
         test_model(model,test_dataset_loader,epoch)
         torch.save(model.state_dict(), exper_path+weights_filename+"_epoch"+str(epoch)+".pth")
 
-if args.pretrained:
-    model.eval()
-    model.load_state_dict(torch.load(args.pretrained,map_location=device))
-    test_model(model,test_dataset_loader)
-else:
-    print("Training started!")
-    train_model(model=model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=NUM_EPOCHS)
-
-####################### inference phase TO BE CORRECTED ###################################
-writer.close()
+###MEASURING INFERENCE SPEED
 model.eval()
-counter = 0
-
-
 with torch.autograd.profiler.profile(use_cuda=True) as prof:
     with torch.no_grad():
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
-        roll, pitch, frame = test_dataset.__getitem__(0) ##### è dataloader o data_loader?
-        roll = roll.to(device, dtype=torch.float)
+        frame_list = []
+        for i in range(1000): ##pre-loading 1000 frames
+
+            _, _, frame = test_dataset.__getitem__(i) 
+            frame = frame.to(device, dtype=torch.float)
+            frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
+            frame_list.append(frame)
+
+        ##warmp-up
+        _, _, frame = test_dataset.__getitem__(1000) 
         frame = frame.to(device, dtype=torch.float)
         frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
-        start.record()
         out_reg_roll, out_reg_pitch = model(frame)
+
+        start.record()
+        for frame in frame_list: 
+            out_reg_roll, out_reg_pitch = model(frame)
         end.record()
         torch.cuda.synchronize()
-        print("Elapsed time for one image: ")
-        print(start.elapsed_time(end))
+        print("Elapsed time (msec) for one image: ")
+        print(start.elapsed_time(end)/1000)
+
+##TEST WITH PRETRAINED
+if args.pretrained:
+    model.eval()
+    model.load_state_dict(torch.load(args.pretrained,map_location=device))
+    test_model(model,test_dataset_loader)
+##TRAINING
+else:
+    model.train()
+    print("Training started!")
+    train_model(model=model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=NUM_EPOCHS)
+
+##CLOSING TENSORBOARD WRITER
+writer.close()
 
