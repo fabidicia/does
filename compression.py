@@ -31,13 +31,19 @@ import torch.nn.functional as F
 from torch.optim import lr_scheduler
 from torch.utils.data.sampler import SubsetRandomSampler
 torch.backends.cudnn.benchmark = True
-from utils import ploton_tensorboard, SquarePad
+from utils import ploton_tensorboard
 from utils import normalize_roll, normalize_pitch, denormalize_roll, denormalize_pitch, inverse_normalize,remove_parameters
 from new_dataset import HorizonDataset
 from networks import Net
 torch.multiprocessing.set_sharing_strategy('file_system')
 from PIL import ImageFile
 from torch.nn.utils import prune
+from flopco import FlopCo
+from musco.pytorch import CompressorVBMF
+
+
+
+
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 ############################# Code call definition ######################################
@@ -67,6 +73,7 @@ args = parser.parse_args()
 ############################# Image and data -related parameters definitions ######################################
 
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+device_cpu = torch.device('cpu')
 seed = randint(0,1000)
 exper_path = "./runs/"+str(seed)+"/"
 print("experiment path: "+exper_path)
@@ -93,19 +100,15 @@ pitch_std = 6.04184024823875
 ##################### make some augmentations on training data ####################
 
 train_transform = transforms.Compose([
-    SquarePad(),
-    transforms.Resize((256,256)),
-#    transforms.Resize((512, 288)),
-#    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
+    transforms.Resize((512, 288)),
+    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
     transforms.ColorJitter(brightness=args.bright, contrast=args.contrast, saturation=args.saturation, hue=args.hue),
     transforms.ToTensor(),
     transforms.Normalize(IMG_MEAN, IMG_STD)
 ])
 test_transform = transforms.Compose([
-    SquarePad(),
-    transforms.Resize((256,256)),
-#    transforms.Resize((512, 288)),
-#    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
+    transforms.Resize((512, 288)),
+    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(IMG_MEAN, IMG_STD)])
 
@@ -117,6 +120,7 @@ denormalize = transforms.Normalize(
 ###train_dataset and test_dataset are build equal in this example. they will be made different by the next snippet of code
 
 train_dataset = HorizonDataset(base_folder = args.train_path, transform=train_transform,filtered=args.filtered)
+aa = train_dataset[1000]
 test_dataset = HorizonDataset(base_folder = args.test_path, transform=test_transform,filtered=args.filtered)
 
 
@@ -130,10 +134,9 @@ testtrain_dataset_loader = torch.utils.data.DataLoader(train_dataset, batch_size
 ############################# Model definition ######################################
 
 model = Net(args)
-optimizer = optim.Adam(model.parameters(), lr=0.0001)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 lr_sch = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 criterion_mse = torch.nn.MSELoss() 
-model = model.to(device)
 
 ############################# Train and Test Model definition ######################################
 
@@ -292,7 +295,6 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
     weights_filename = args.model + "_" + day
 
     print("Run the command 'tensorboard --logdir=runs' and navigate to the given link to see the images")
-    
     for epoch in range(num_epochs):
         print('-' * 10)
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
@@ -307,7 +309,6 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
             frame = frame.to(device, dtype=torch.float)
             optimizer.zero_grad()
             loss = 0.0
-
             if args.roll:            
                 roll = roll.to(device, dtype=torch.float)
                 roll = normalize_roll(roll, roll_mean, roll_std)
@@ -338,43 +339,28 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
         test_model(model,test_dataset_loader,epoch)
         torch.save(model.state_dict(), exper_path+weights_filename+"_epoch"+str(epoch)+".pth")
 
-if args.pretrained:
-    model.eval()
-    model.load_state_dict(torch.load(args.pretrained,map_location=device))
-
-###PRUNING
-prune_flag= 0
-if args.pruning:
-    parameters_to_prune = []
-    for module_name, module in model.named_modules():
-        if isinstance(module, torch.nn.Conv2d):
-            parameters_to_prune.append((module, "weight"))
-            prune_flag = 1
-        elif isinstance(module, torch.nn.Linear):
-            parameters_to_prune.append((module, "weight"))
-            prune_flag = 1
-    prune.global_unstructured(parameters_to_prune,pruning_method=prune.L1Unstructured,amount=args.pruning,)
-    model = remove_parameters(model)
-if prune_flag:
-    print("pruned!")
+###LOADING THE PRETRAINED MODEL
+model.load_state_dict(torch.load(args.pretrained,map_location=device))
+model = model.to(device)
 
 ###MEASURING INFERENCE SPEED
 model.eval()
-with torch.autograd.profiler.profile(use_cuda=True) as prof:
+model.to(device_cpu) ###DA TOGLIERE
+with torch.autograd.profiler.profile(use_cuda=False) as prof:
     with torch.no_grad():
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         frame_list = []
-        for i in range(1000): ##pre-loading 1000 frames
+        for i in range(100): ##pre-loading 100 frames
 
             _, _, frame = test_dataset.__getitem__(i) 
-            frame = frame.to(device, dtype=torch.float)
+            frame = frame.to(device_cpu, dtype=torch.float)
             frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
             frame_list.append(frame)
 
         ##warmp-up
-        _, _, frame = test_dataset.__getitem__(1000) 
-        frame = frame.to(device, dtype=torch.float)
+        _, _, frame = test_dataset.__getitem__(100) 
+        frame = frame.to(device_cpu, dtype=torch.float)
         frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
         out_reg_roll, out_reg_pitch = model(frame)
 
@@ -384,16 +370,61 @@ with torch.autograd.profiler.profile(use_cuda=True) as prof:
         end.record()
         torch.cuda.synchronize()
         print("Elapsed time (msec) for one image: ")
-        print(start.elapsed_time(end)/1000)
+        print(start.elapsed_time(end)/100)
+#### COMPRESSION AND FINETUNING
+model.to(device)
+model_stats = FlopCo(model, device = device)
+compressor = CompressorVBMF(model,
+                            model_stats,
+                            ft_every=5, 
+                            nglobal_compress_iters=1)
 
-##TEST WITH PRETRAINED
-if args.pretrained:
-    test_model(model,test_dataset_loader)
-##TRAINING
-else:
-    model.train()
-    print("Training started!")
-    train_model(model=model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=NUM_EPOCHS)
+model.train()
+print("Compression and finetuning started!")
+while not compressor.done:
+    # Compress layers
+    try:
+        compressor.compression_step()
+    except Exception as e: 
+        print(e)
+    compressor.compressed_model = compressor.compressed_model.to(device)
+    train_model(model=compressor.compressed_model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=1)
+print("Compression ended! Measuring time performances:")
+model = compressor.compressed_model
+model = model.to(device_cpu) ##DA TOGLIERE
+###MEASURING INFERENCE SPEED
+model.eval()
+with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    with torch.no_grad():
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        frame_list = []
+        for i in range(100): ##pre-loading 100 frames
+
+            _, _, frame = test_dataset.__getitem__(i) 
+            frame = frame.to(device_cpu, dtype=torch.float)
+            frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
+            frame_list.append(frame)
+
+        ##warmp-up
+        _, _, frame = test_dataset.__getitem__(100) 
+        frame = frame.to(device_cpu, dtype=torch.float)
+        frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
+        out_reg_roll, out_reg_pitch = model(frame)
+
+        start.record()
+        for frame in frame_list: 
+            out_reg_roll, out_reg_pitch = model(frame)
+        end.record()
+        torch.cuda.synchronize()
+        print("Elapsed time (msec) for one image: ")
+        print(start.elapsed_time(end)/100)
+
+##futher training:
+model = model.to(device)
+model.train()
+train_model(model=model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=10)
+
 ##CLOSING TENSORBOARD WRITER
 writer.close()
 

@@ -22,12 +22,14 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from torch.utils.data.sampler import SubsetRandomSampler
+import torchvision
 torch.backends.cudnn.benchmark = True
 from new_dataset import HorizonDataset
 from tqdm import tqdm
 import cv2 
 import two_objectives_horizon_detection as tohd
 from scipy.optimize import lsq_linear
+from torch.nn.utils import prune
 #################################### functions ##########################
 
 # https://stackoverflow.com/questions/37804279/how-can-we-use-tqdm-in-a-parallel-execution-with-joblib
@@ -449,3 +451,47 @@ def LLSc(gt,pred):
 #so:
 #pred_list = np.array(pred_list)*res.x[0]+res.x[1]
 
+#to calculate numbers of parameters
+#sum(p.numel() for p in model.parameters() if p.requires_grad)
+def get_total_parameters_count(model):
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def get_pruned_parameters_count(pruned_model):
+    params = 0
+    for param in pruned_model.parameters():
+        if param is not None:
+            params += torch.nonzero(param).size(0)
+    return params
+
+def remove_parameters(model):
+
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Conv2d):
+            try:
+                prune.remove(module, "weight")
+            except:
+                pass
+            try:
+                prune.remove(module, "bias")
+            except:
+                pass
+        elif isinstance(module, torch.nn.Linear):
+            try:
+                prune.remove(module, "weight")
+            except:
+                pass
+            try:
+                prune.remove(module, "bias")
+            except:
+                pass
+
+    return model
+
+class SquarePad:
+    def __call__(self, image):
+        max_wh = max(image.size)
+        p_left, p_top = [(max_wh - s) // 2 for s in image.size]
+        p_right, p_bottom = [max_wh - (s+pad) for s, pad in zip(image.size, [p_left, p_top])]
+        padding = (p_left, p_top, p_right, p_bottom)
+        return torchvision.transforms.functional.pad(image, padding, 0, 'constant')

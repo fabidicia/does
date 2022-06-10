@@ -163,6 +163,32 @@ class Net(nn.Module):
                         nn.Linear(in_features=1280, out_features=out_features_mse)
             )
 
+        if args.model == "efficient_b0":
+            model  = timm.create_model('efficientnet_b0',pretrained=True)
+#            modules = list(model.children())[:-1]
+            self.model = model #nn.Sequential(*modules) #rebuilding the network after fc removal
+            #import pdb; pdb.set_trace()
+            self.model.classifier = nn.Identity()
+            self.fc_reg_roll = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1280, out_features=out_features_mse)
+            )
+            self.fc_reg_pitch = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1280, out_features=out_features_mse)
+            )
+
+        if args.model == "efficient_b1_pruned":
+            model  = timm.create_model('efficientnet_b1_pruned',pretrained=True)
+#            modules = list(model.children())[:-1]
+            self.model = model #nn.Sequential(*modules) #rebuilding the network after fc removal
+            #import pdb; pdb.set_trace()
+            self.model.classifier = nn.Identity()
+            self.fc_reg_roll = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1280, out_features=out_features_mse)
+            )
+            self.fc_reg_pitch = nn.Sequential( ## fully connected regression branch,
+                        nn.Linear(in_features=1280, out_features=out_features_mse)
+            )
+
     def forward(self, x):
         x = self.model(x)
         x = x.view(x.shape[0],-1) 
