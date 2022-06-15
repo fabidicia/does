@@ -31,13 +31,14 @@ import torch.nn.functional as F
 from torch.optim import lr_scheduler
 from torch.utils.data.sampler import SubsetRandomSampler
 torch.backends.cudnn.benchmark = True
-from utils import ploton_tensorboard, SquarePad
+from utils import ploton_tensorboard, SquarePad, Onnx_Model
 from utils import normalize_roll, normalize_pitch, denormalize_roll, denormalize_pitch, inverse_normalize,remove_parameters
 from new_dataset import HorizonDataset
 from networks import Net
 torch.multiprocessing.set_sharing_strategy('file_system')
 from PIL import ImageFile
 from torch.nn.utils import prune
+import torch.onnx, onnxruntime, onnx
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 ############################# Code call definition ######################################
@@ -61,6 +62,7 @@ parser.add_argument('--testtrain', action="store_true")
 parser.add_argument('--test_hld', action="store_true")
 parser.add_argument('--filtered', default=1)
 parser.add_argument('--pruning', type=float, default=0)
+parser.add_argument('--onnx',type=str, default='cuda')
 
 args = parser.parse_args()
 
@@ -130,7 +132,7 @@ testtrain_dataset_loader = torch.utils.data.DataLoader(train_dataset, batch_size
 ############################# Model definition ######################################
 
 model = Net(args)
-optimizer = optim.Adam(model.parameters(), lr=0.0001)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 lr_sch = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 criterion_mse = torch.nn.MSELoss() 
 model = model.to(device)
@@ -365,7 +367,8 @@ with torch.autograd.profiler.profile(use_cuda=True) as prof:
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
         frame_list = []
-        for i in range(1000): ##pre-loading 1000 frames
+        length = 100
+        for i in range(length): ##pre-loading 1000 frames
 
             _, _, frame = test_dataset.__getitem__(i) 
             frame = frame.to(device, dtype=torch.float)
@@ -373,7 +376,7 @@ with torch.autograd.profiler.profile(use_cuda=True) as prof:
             frame_list.append(frame)
 
         ##warmp-up
-        _, _, frame = test_dataset.__getitem__(1000) 
+        _, _, frame = test_dataset.__getitem__(length) 
         frame = frame.to(device, dtype=torch.float)
         frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
         out_reg_roll, out_reg_pitch = model(frame)
@@ -384,10 +387,32 @@ with torch.autograd.profiler.profile(use_cuda=True) as prof:
         end.record()
         torch.cuda.synchronize()
         print("Elapsed time (msec) for one image: ")
-        print(start.elapsed_time(end)/1000)
+        print(start.elapsed_time(end)/length)
 
 ##TEST WITH PRETRAINED
 if args.pretrained:
+    if (args.onnx=='cuda') or (args.onnx == 'rt'):
+        print("Starting onnx run...")
+        batch_size= 1
+        input = torch.randn(batch_size,3,256,256,requires_grad=True) 
+        input = input.to(device, dtype=torch.float)
+        out_reg_roll, out_reg_pitch = model(input)
+        torch.onnx.export(model,               # model being run
+                  input,                         # model input (or a tuple for multiple inputs)
+                  "model.onnx",   # where to save the model (can be a file or file-like object)
+                  export_params=True,        # store the trained parameter weights inside the model file
+                  opset_version=10,
+                  verbose=False,          # the ONNX version to export the model to
+                  do_constant_folding=True,  # whether to execute constant folding for optimization
+                  input_names = ['input'],   # the model's input names
+                  output_names = ['output1','output2'], # the model's output names
+                  dynamic_axes={'input' : {0 : 'batch_size'},    # variable length axes
+                                'output1' : {0 : 'batch_size'},
+                                'output2' : {0 : 'batch_size'}})
+        onnx_model = Onnx_Model(provider=args.onnx) 
+        print("Testing accuracy with onnx:")
+        test_model(model=onnx_model,dataloader=test_dataset_loader)
+        print("Test finished. Now testing with the same mode without onnx:")
     test_model(model,test_dataset_loader)
 ##TRAINING
 else:

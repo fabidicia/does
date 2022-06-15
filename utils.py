@@ -30,6 +30,7 @@ import cv2
 import two_objectives_horizon_detection as tohd
 from scipy.optimize import lsq_linear
 from torch.nn.utils import prune
+import torch.onnx, onnxruntime, onnx
 #################################### functions ##########################
 
 # https://stackoverflow.com/questions/37804279/how-can-we-use-tqdm-in-a-parallel-execution-with-joblib
@@ -495,3 +496,16 @@ class SquarePad:
         p_right, p_bottom = [max_wh - (s+pad) for s, pad in zip(image.size, [p_left, p_top])]
         padding = (p_left, p_top, p_right, p_bottom)
         return torchvision.transforms.functional.pad(image, padding, 0, 'constant')
+
+
+class Onnx_Model():
+    def __init__(self,provider: str):
+        self.onnx_model = onnx.load("model.onnx")
+        onnx.checker.check_model(self.onnx_model)
+        self.providers_dict = {'cuda':'CUDAExecutionProvider', 'rt': 'TensorrtExecutionProvider'}
+        self.ort_session = onnxruntime.InferenceSession("model.onnx",providers=[self.providers_dict[provider]])
+    def __call__(self, x):
+        return self.ort_session.run(None,{"input": x.cpu().numpy()},)
+
+    def eval(self):
+        pass
