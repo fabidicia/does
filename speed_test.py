@@ -19,6 +19,7 @@ parser.add_argument('--pitch', type=int, default=1)
 parser.add_argument('--model', type=str, required=True)
 parser.add_argument('--dropout', type=float, default=0.0)
 parser.add_argument('--test_hld', action="store_true")
+parser.add_argument('--half', action="store_true")
 parser.add_argument('--gpu', type=str,default='True')
 parser.add_argument('--onnx',type=str, default='cuda')
 
@@ -26,62 +27,33 @@ args = parser.parse_args()
 
 ############################# Image and data -related parameters definitions ######################################
 
-if args.gpu=='True':
-    device = torch.device('cuda') 
-    model = Net(args)
+if args.gpu=='True' or args.gpu=='False':
+    device = torch.device('cuda')
+    model = torch.load(args.model) if ".pth" in args.model else  Net(args)
 
     ###MEASURING INFERENCE SPEED
     model.eval()
     model.to(device) ###DA TOGLIERE
+    if args.half: model = model.half() 
 
-    with torch.autograd.profiler.profile(use_cuda=True) as prof:
+    with torch.autograd.profiler.profile(use_cuda=bool(args.gpu)) as prof:
         with torch.no_grad():
             start = torch.cuda.Event(enable_timing=True)
             end = torch.cuda.Event(enable_timing=True)
             frame_list = []
-            for i in range(100): ##pre-loading 100 frames
+            length = 100
+            for i in range(length): ##pre-loading 100 frames
                 frame = torch.rand(3,256,256) 
 
                 frame = frame.to(device, dtype=torch.float)
+                if args.half: frame = frame.half() 
                 frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
                 frame_list.append(frame)
 
             ##warmp-up
             frame = torch.rand(3,256,256) 
             frame = frame.to(device, dtype=torch.float)
-            frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
-            out_reg_roll, out_reg_pitch = model(frame)
-
-            start.record()
-            for frame in frame_list: 
-                out_reg_roll, out_reg_pitch = model(frame)
-            end.record()
-            torch.cuda.synchronize()
-            print("Elapsed time (msec) for one image: ")
-            print(start.elapsed_time(end)/len(frame_list))
-elif args.gpu=='False':
-    device = torch.device('cpu') 
-    model = Net(args)
-
-    ###MEASURING INFERENCE SPEED
-    model.eval()
-    model.to(device) ###DA TOGLIERE
-
-    with torch.autograd.profiler.profile(use_cuda=False) as prof:
-        with torch.no_grad():
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            frame_list = []
-            for i in range(10): ##pre-loading 100 frames
-                frame = torch.rand(3,256,256) 
-
-                frame = frame.to(device, dtype=torch.float)
-                frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
-                frame_list.append(frame)
-
-            ##warmp-up
-            frame = torch.rand(3,256,256) 
-            frame = frame.to(device, dtype=torch.float)
+            if args.half: frame = frame.half() 
             frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
             out_reg_roll, out_reg_pitch = model(frame)
 
@@ -94,7 +66,7 @@ elif args.gpu=='False':
             print(start.elapsed_time(end)/len(frame_list))
 else:
     device = torch.device('cuda') 
-    model = Net(args)
+    model = torch.load(args.model) if ".pth" in args.model else  Net(args)
 
     ###MEASURING INFERENCE SPEED
     model.eval()
@@ -105,6 +77,7 @@ import torch.onnx
 batch_size= 1
 input = torch.randn(batch_size,3,256,256) 
 input = input.to(device, dtype=torch.float)
+if args.half: input = input.half()
 out_reg_roll, out_reg_pitch = model(input)
 
 # Export the model
@@ -130,17 +103,15 @@ ort_session = onnxruntime.InferenceSession("model.onnx",providers=[providers_dic
 #so = ort.SessionOptions()
 #so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 #ort_session = onnxruntime.InferenceSession(model_name, so)
-output1,output2 = ort_session.run(
-    None,
-    {"input": np.random.randn(10, 3, 256, 256).astype(np.float32)},)
+input = np.random.randn(10, 3, 256, 256).astype(np.float16) if args.half else np.random.randn(10, 3, 256, 256).astype(np.float32)
+output1,output2 = ort_session.run(None,{"input": input},)
 
 start = timer()
 n_times = 100
 dummy_list = []
 for i in range(n_times):
-    output1,output2 = ort_session.run(
-    None,
-    {"input": np.random.randn(1, 3, 256, 256).astype(np.float32)},)
+    input = np.random.randn(10, 3, 256, 256).astype(np.float16) if args.half else np.random.randn(10, 3, 256, 256).astype(np.float32)
+    output1,output2 = ort_session.run(None,{"input": input},)
     dummy_list.append(output1-output2)
 elapsed = timer() - start
 print("Elapsed time in msec, ONNX format:")

@@ -31,7 +31,7 @@ import torch.nn.functional as F
 from torch.optim import lr_scheduler
 from torch.utils.data.sampler import SubsetRandomSampler
 torch.backends.cudnn.benchmark = True
-from utils import ploton_tensorboard
+from utils import ploton_tensorboard, SquarePad, Onnx_Model
 from utils import normalize_roll, normalize_pitch, denormalize_roll, denormalize_pitch, inverse_normalize,remove_parameters
 from new_dataset import HorizonDataset
 from networks import Net
@@ -67,6 +67,8 @@ parser.add_argument('--testtrain', action="store_true")
 parser.add_argument('--test_hld', action="store_true")
 parser.add_argument('--filtered', default=1)
 parser.add_argument('--pruning', type=float, default=0)
+parser.add_argument('--compression', action="store_true")
+parser.add_argument('--quantization', action="store_true")
 
 args = parser.parse_args()
 
@@ -98,17 +100,20 @@ pitch_mean = 93.7015324099723
 pitch_std = 6.04184024823875
 
 ##################### make some augmentations on training data ####################
-
 train_transform = transforms.Compose([
-    transforms.Resize((512, 288)),
-    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
+    SquarePad(),
+    transforms.Resize((256,256)),
+#    transforms.Resize((512, 288)),
+#    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
     transforms.ColorJitter(brightness=args.bright, contrast=args.contrast, saturation=args.saturation, hue=args.hue),
     transforms.ToTensor(),
     transforms.Normalize(IMG_MEAN, IMG_STD)
 ])
 test_transform = transforms.Compose([
-    transforms.Resize((512, 288)),
-    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
+    SquarePad(),
+    transforms.Resize((256,256)),
+#    transforms.Resize((512, 288)),
+#    transforms.CenterCrop((CROP_SIZE,CROP_SIZE)),
     transforms.ToTensor(),
     transforms.Normalize(IMG_MEAN, IMG_STD)])
 
@@ -134,7 +139,7 @@ testtrain_dataset_loader = torch.utils.data.DataLoader(train_dataset, batch_size
 ############################# Model definition ######################################
 
 model = Net(args)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(model.parameters(), lr=0.0001)
 lr_sch = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 criterion_mse = torch.nn.MSELoss() 
 
@@ -371,6 +376,8 @@ with torch.autograd.profiler.profile(use_cuda=False) as prof:
         torch.cuda.synchronize()
         print("Elapsed time (msec) for one image: ")
         print(start.elapsed_time(end)/100)
+
+
 #### COMPRESSION AND FINETUNING
 model.to(device)
 model_stats = FlopCo(model, device = device)
@@ -378,52 +385,50 @@ compressor = CompressorVBMF(model,
                             model_stats,
                             ft_every=5, 
                             nglobal_compress_iters=1)
-
-model.train()
-print("Compression and finetuning started!")
-while not compressor.done:
+str_param = ""
+if args.compression:
+    str_param += "compressed"
+    model.train()
+    print("Compression and finetuning started!")
+    while not compressor.done:
     # Compress layers
-    try:
-        compressor.compression_step()
-    except Exception as e: 
-        print(e)
-    compressor.compressed_model = compressor.compressed_model.to(device)
-    train_model(model=compressor.compressed_model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=1)
-print("Compression ended! Measuring time performances:")
-model = compressor.compressed_model
-model = model.to(device_cpu) ##DA TOGLIERE
-###MEASURING INFERENCE SPEED
+        try:
+            compressor.compression_step()
+        except Exception as e: 
+            print(e)
+        compressor.compressed_model = compressor.compressed_model.to(device)
+        train_model(model=compressor.compressed_model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=1)
+    print("Compression ended! Measuring time performances:")
+    model = compressor.compressed_model
+    #model = model.to(device_cpu) ##DA TOGLIERE
+
+###PRUNING
+prune_flag= 0
 model.eval()
-with torch.autograd.profiler.profile(use_cuda=True) as prof:
-    with torch.no_grad():
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        frame_list = []
-        for i in range(100): ##pre-loading 100 frames
+if args.pruning:
+    parameters_to_prune = []
+    for module_name, module in model.named_modules():
+        if isinstance(module, torch.nn.Conv2d):
+            parameters_to_prune.append((module, "weight"))
+            prune_flag = 1
+        elif isinstance(module, torch.nn.Linear):
+            parameters_to_prune.append((module, "weight"))
+            prune_flag = 1
+    prune.global_unstructured(parameters_to_prune,pruning_method=prune.L1Unstructured,amount=args.pruning,)
+    model = remove_parameters(model) 
+if prune_flag:
+    print("pruned!")
+    str_param += "_pruned"
 
-            _, _, frame = test_dataset.__getitem__(i) 
-            frame = frame.to(device_cpu, dtype=torch.float)
-            frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
-            frame_list.append(frame)
 
-        ##warmp-up
-        _, _, frame = test_dataset.__getitem__(100) 
-        frame = frame.to(device_cpu, dtype=torch.float)
-        frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
-        out_reg_roll, out_reg_pitch = model(frame)
-
-        start.record()
-        for frame in frame_list: 
-            out_reg_roll, out_reg_pitch = model(frame)
-        end.record()
-        torch.cuda.synchronize()
-        print("Elapsed time (msec) for one image: ")
-        print(start.elapsed_time(end)/100)
+torch.save(model,args.model+"_"+str_param+".pth")
 
 ##futher training:
 model = model.to(device)
 model.train()
 train_model(model=model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=10)
+torch.save(model,args.model+"_"+str_param+"_retrained.pth")
+
 
 ##CLOSING TENSORBOARD WRITER
 writer.close()
