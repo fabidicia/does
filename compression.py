@@ -139,7 +139,7 @@ testtrain_dataset_loader = torch.utils.data.DataLoader(train_dataset, batch_size
 ############################# Model definition ######################################
 
 model = Net(args)
-optimizer = optim.Adam(model.parameters(), lr=0.0001)
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 lr_sch = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 criterion_mse = torch.nn.MSELoss() 
 

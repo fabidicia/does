@@ -26,9 +26,45 @@ parser.add_argument('--onnx',type=str, default='cuda')
 args = parser.parse_args()
 
 ############################# Image and data -related parameters definitions ######################################
-
-if args.gpu=='True' or args.gpu=='False':
+if args.gpu=='True':
     device = torch.device('cuda')
+    model = torch.load(args.model) if ".pth" in args.model else  Net(args)
+
+    ###MEASURING INFERENCE SPEED
+    model.eval()
+    model.to(device) ###DA TOGLIERE
+    if args.half: model = model.half() 
+
+    with torch.autograd.profiler.profile(use_cuda=bool(args.gpu)) as prof:
+        with torch.no_grad():
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            frame_list = []
+            length = 100
+            for i in range(length): ##pre-loading 100 frames
+                frame = torch.rand(3,256,256) 
+
+                frame = frame.to(device, dtype=torch.float)
+                if args.half: frame = frame.half() 
+                frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
+                frame_list.append(frame)
+
+            ##warmp-up
+            frame = torch.rand(3,256,256) 
+            frame = frame.to(device, dtype=torch.float)
+            if args.half: frame = frame.half() 
+            frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
+            out_reg_roll, out_reg_pitch = model(frame)
+
+            start.record()
+            for frame in frame_list: 
+                out_reg_roll, out_reg_pitch = model(frame)
+            end.record()
+            torch.cuda.synchronize()
+            print("Elapsed time (msec) for one image: ")
+            print(start.elapsed_time(end)/len(frame_list))
+elif args.gpu=='False':
+    device = torch.device('cpu')
     model = torch.load(args.model) if ".pth" in args.model else  Net(args)
 
     ###MEASURING INFERENCE SPEED
@@ -98,8 +134,9 @@ torch.cuda.empty_cache()
 import onnx,onnxruntime
 onnx_model = onnx.load("model.onnx")
 onnx.checker.check_model(onnx_model)
-providers_dict = {'cuda':'CUDAExecutionProvider', 'rt': 'TensorrtExecutionProvider'}
+providers_dict = {'cuda':'CUDAExecutionProvider', 'rt': 'TensorrtExecutionProvider','cpu': 'CPUExecutionProvider'}
 ort_session = onnxruntime.InferenceSession("model.onnx",providers=[providers_dict[args.onnx]])
+
 #so = ort.SessionOptions()
 #so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 #ort_session = onnxruntime.InferenceSession(model_name, so)
