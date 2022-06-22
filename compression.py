@@ -40,8 +40,21 @@ from PIL import ImageFile
 from torch.nn.utils import prune
 from flopco import FlopCo
 from musco.pytorch import CompressorVBMF
-
-
+import torch.quantization
+from torch.quantization import get_default_qconfig, quantize_jit
+from torch.quantization.quantize_fx import prepare_fx, convert_fx
+# Setup warnings
+import platform
+import warnings
+warnings.filterwarnings(
+    action='ignore',
+    category=DeprecationWarning,
+    module=r'.*'
+)
+warnings.filterwarnings(
+    action='default',
+    module=r'torch.quantization'
+)
 
 
 
@@ -69,13 +82,13 @@ parser.add_argument('--filtered', default=1)
 parser.add_argument('--pruning', type=float, default=0)
 parser.add_argument('--compression', action="store_true")
 parser.add_argument('--quantization', action="store_true")
+parser.add_argument('--gpu', type=str, default="True")
 
 args = parser.parse_args()
 
 ############################# Image and data -related parameters definitions ######################################
 
-device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
-device_cpu = torch.device('cpu')
+device = torch.device('cuda') if args.gpu=="True" else torch.device('cpu')
 seed = randint(0,1000)
 exper_path = "./runs/"+str(seed)+"/"
 print("experiment path: "+exper_path)
@@ -347,11 +360,20 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
 ###LOADING THE PRETRAINED MODEL
 model.load_state_dict(torch.load(args.pretrained,map_location=device))
 model = model.to(device)
+if args.quantization:
+    model.eval()
+    qconfig = get_default_qconfig("fbgemm") if "x86_64" in platform.uname().processor else get_default_qconfig("qnnpack")
+    qconfig_dict = {"": qconfig}
+    model_prepared = prepare_fx(model, qconfig_dict)
+    test_model(model_prepared, test_dataset_loader)
+    model = convert_fx(model_prepared)
+    print("quantizatioon done!next inference speed and accuracy tests will be performed on quantized model")
+    model = model.to(device)
+    test_model(model, test_dataset_loader)
 
 ###MEASURING INFERENCE SPEED
 model.eval()
-model.to(device_cpu) ###DA TOGLIERE
-with torch.autograd.profiler.profile(use_cuda=False) as prof:
+with torch.autograd.profiler.profile(use_cuda=bool(args.gpu)) as prof:
     with torch.no_grad():
         start = torch.cuda.Event(enable_timing=True)
         end = torch.cuda.Event(enable_timing=True)
@@ -359,16 +381,18 @@ with torch.autograd.profiler.profile(use_cuda=False) as prof:
         for i in range(100): ##pre-loading 100 frames
 
             _, _, frame = test_dataset.__getitem__(i) 
-            frame = frame.to(device_cpu, dtype=torch.float)
+            frame = frame.to(device, dtype=torch.float)
             frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
             frame_list.append(frame)
 
         ##warmp-up
         _, _, frame = test_dataset.__getitem__(100) 
-        frame = frame.to(device_cpu, dtype=torch.float)
+        frame = frame.to(device, dtype=torch.float)
         frame = frame.unsqueeze(0) ##aggiungo una dimensione per matchare la shape di outputs!
-        out_reg_roll, out_reg_pitch = model(frame)
-
+        try:
+            out_reg_roll, out_reg_pitch = model(frame)
+        except:
+            import pdb; pdb.set_trace()
         start.record()
         for frame in frame_list: 
             out_reg_roll, out_reg_pitch = model(frame)
@@ -379,15 +403,15 @@ with torch.autograd.profiler.profile(use_cuda=False) as prof:
 
 
 #### COMPRESSION AND FINETUNING
-model.to(device)
-model_stats = FlopCo(model, device = device)
-compressor = CompressorVBMF(model,
-                            model_stats,
-                            ft_every=5, 
-                            nglobal_compress_iters=1)
 str_param = ""
 if args.compression:
     str_param += "compressed"
+    model.to(device)
+    model_stats = FlopCo(model, device = device)
+    compressor = CompressorVBMF(model,
+                            model_stats,
+                            ft_every=5, 
+                            nglobal_compress_iters=1)
     model.train()
     print("Compression and finetuning started!")
     while not compressor.done:
@@ -400,7 +424,6 @@ if args.compression:
         train_model(model=compressor.compressed_model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=1)
     print("Compression ended! Measuring time performances:")
     model = compressor.compressed_model
-    #model = model.to(device_cpu) ##DA TOGLIERE
 
 ###PRUNING
 prune_flag= 0

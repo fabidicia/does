@@ -11,6 +11,8 @@ from networks import Net
 import argparse
 from timeit import default_timer as timer
 import time
+import torch.quantization.quantize_fx as quantize_fx
+
 ############################# Code call definition ######################################
 
 parser = argparse.ArgumentParser("script to train horpe on oneplus videoframe")
@@ -20,6 +22,7 @@ parser.add_argument('--model', type=str, required=True)
 parser.add_argument('--dropout', type=float, default=0.0)
 parser.add_argument('--test_hld', action="store_true")
 parser.add_argument('--half', action="store_true")
+parser.add_argument('--quantization', action="store_true")
 parser.add_argument('--gpu', type=str,default='True')
 parser.add_argument('--onnx',type=str, default='cuda')
 
@@ -34,7 +37,11 @@ if args.gpu=='True':
     model.eval()
     model.to(device) ###DA TOGLIERE
     if args.half: model = model.half() 
-
+    if args.quantization:
+        qconfig_dict = {"": torch.quantization.default_dynamic_qconfig}
+        model_prepared = quantize_fx.prepare_fx(model, qconfig_dict)
+        model = quantize_fx.convert_fx(model_prepared)
+        
     with torch.autograd.profiler.profile(use_cuda=bool(args.gpu)) as prof:
         with torch.no_grad():
             start = torch.cuda.Event(enable_timing=True)
@@ -134,8 +141,10 @@ torch.cuda.empty_cache()
 import onnx,onnxruntime
 onnx_model = onnx.load("model.onnx")
 onnx.checker.check_model(onnx_model)
+options = onnxruntime.SessionOptions()
+options.enable_profiling = True          # <-Profile function enabled
 providers_dict = {'cuda':'CUDAExecutionProvider', 'rt': 'TensorrtExecutionProvider','cpu': 'CPUExecutionProvider'}
-ort_session = onnxruntime.InferenceSession("model.onnx",providers=[providers_dict[args.onnx]])
+ort_session = onnxruntime.InferenceSession("model.onnx",providers=[providers_dict[args.onnx]],sess_options=options)
 
 #so = ort.SessionOptions()
 #so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -153,3 +162,4 @@ for i in range(n_times):
 elapsed = timer() - start
 print("Elapsed time in msec, ONNX format:")
 print(elapsed/n_times)
+prof_file = ort_session.end_profiling()
