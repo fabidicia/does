@@ -342,7 +342,7 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
 
 if args.pretrained:
     try:
-        model = torch.load(args.model)
+        model = torch.load(args.pretrained)
         model = model.to(device)
     except:
         model.load_state_dict(torch.load(args.pretrained,map_location=device))
