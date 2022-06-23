@@ -341,8 +341,12 @@ def train_model(model, data_loader, dataset_size, optimizer, scheduler, num_epoc
         torch.save(model.state_dict(), exper_path+weights_filename+"_epoch"+str(epoch)+".pth")
 
 if args.pretrained:
+    try:
+        model = torch.load(args.model)
+        model = model.to(device)
+    except:
+        model.load_state_dict(torch.load(args.pretrained,map_location=device))
     model.eval()
-    model.load_state_dict(torch.load(args.pretrained,map_location=device))
 
 ###PRUNING
 prune_flag= 0

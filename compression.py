@@ -152,7 +152,7 @@ testtrain_dataset_loader = torch.utils.data.DataLoader(train_dataset, batch_size
 ############################# Model definition ######################################
 
 model = Net(args)
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(model.parameters(), lr=0.0001)
 lr_sch = lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.1)
 criterion_mse = torch.nn.MSELoss() 
 
@@ -421,7 +421,7 @@ if args.compression:
         except Exception as e: 
             print(e)
         compressor.compressed_model = compressor.compressed_model.to(device)
-        train_model(model=compressor.compressed_model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=1)
+        train_model(model=compressor.compressed_model, data_loader=train_dataset_loader, dataset_size=len(train_dataset_loader), optimizer=optimizer , scheduler=lr_sch, num_epochs=10)
     print("Compression ended! Measuring time performances:")
     model = compressor.compressed_model
 
