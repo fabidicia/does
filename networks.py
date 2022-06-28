@@ -5,7 +5,10 @@ from torchvision import transforms, models
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from vit_pytorch import SimpleViT
+try:
+    from vit_pytorch import SimpleViT
+except:
+    pass
 import timm
 
 out_features_mse = 1
