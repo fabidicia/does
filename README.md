@@ -66,5 +66,5 @@ The following images shows the results obtained by DANAE++ w.r.t. the roll angle
 # References
 [Original Article]: https://ieeexplore.ieee.org/document/9733371 published by IEEE, IEEE Access, 2022
 
-[Conference Paper]: https://arxiv.org/abs/2011.06853 published by IEEE, 2022 IEEE International Workshop on Metrology for the Sea; Learning to Measure Sea Health Parameters (MetroSea)
+[Conference Paper]: https://ieeexplore.ieee.org/document/9950745 published by IEEE, 2022 IEEE International Workshop on Metrology for the Sea; Learning to Measure Sea Health Parameters (MetroSea)
 
